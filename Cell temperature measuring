@@ -1,0 +1,34 @@
+The essential idea of temperature measurring is to protect batteries from overheating due to various reasons like charging and/or dicsharging current and external heat/cold. 
+In our case we are planned to go with two temp sensors placed on the opposite ends of battery pack.
+This protection can be effectively set up with use of thermistor NTC10D13 where 10 - means that its value is 10 kilo-ohms at temperature of 25 Celsius, while D13 represent diemeter in milimeters.
+This Negative Temperature Coeficient thermistor have caracteristic that with temp rise his resistance decrase, therefore voltage drop on this resistor decrease too and can be measured with STP32
+
+This resistor connected in series with resistor of 10 killohms will create voltage drop of half the value at the temp 25 celsius. 
+In sowtware we can implement formula that will calculate variable "cell_temp" with accurate value of temp based on ADC conversion of voltage drop across the NTC resistor. 
+
+An 100 ohm resistor and capacitor 100nF should be added before ADC pin (according to schematic) in order to filter signal like we larned at Jani course Design of digital devices.
+
+
+Reasons why we should go with this setup is first of all low cost, accuracy, this thermistor is comonly supported by ic cintrolers if we opt up to go with one of those, easy to interface with simple voltage divider to ADC input of NUCLEO.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
