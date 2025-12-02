@@ -1,0 +1,3 @@
+../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_bus.h:693:22:LL_APB1_GRP1_ForceReset	1
+../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_bus.h:747:22:LL_APB1_GRP1_ReleaseReset	1
+../Drivers/STM32L1xx_HAL_Driver/Src/stm32l1xx_ll_pwr.c:55:13:LL_PWR_DeInit	1
