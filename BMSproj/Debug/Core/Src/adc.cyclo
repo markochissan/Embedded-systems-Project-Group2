@@ -1,7 +1,0 @@
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_adc.h:2546:22:LL_ADC_SetChannelsBank	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_adc.h:3017:22:LL_ADC_REG_SetSequencerRanks	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_adc.h:3290:22:LL_ADC_REG_SetFlagEndOfConversion	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_adc.h:3902:22:LL_ADC_SetChannelSamplingTime	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_bus.h:214:22:LL_AHB1_GRP1_EnableClock	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_bus.h:893:22:LL_APB2_GRP1_EnableClock	1
-../Core/Src/adc.c:28:6:MX_ADC_Init	1

@@ -1,6 +1,0 @@
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_bus.h:214:22:LL_AHB1_GRP1_EnableClock	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_system.h:622:22:LL_SYSCFG_SetEXTISource	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_gpio.h:273:22:LL_GPIO_SetPinMode	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_gpio.h:484:22:LL_GPIO_SetPinPull	1
-../Drivers/STM32L1xx_HAL_Driver/Inc/stm32l1xx_ll_gpio.h:912:22:LL_GPIO_ResetOutputPin	1
-../Core/Src/gpio.c:42:6:MX_GPIO_Init	1
