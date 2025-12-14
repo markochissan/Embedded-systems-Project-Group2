@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include <math.h>
 
 #include "stm32l1xx.h"
 #include "stm32l1xx_conf.h"
@@ -9,15 +11,31 @@
 #include "stm32l1xx_ll_usart.h"
 #include "stm32l1xx_ll_adc.h"
 
-// --- FUNCTION PROTOTYPES ---
-void SystemClock_Config(void);
-void UART2_Init(void);
-void ADC_Temp_Init(void);
+/* ===================== DEFINES ===================== */
+
+// --- ADC Watchdog thresholds ---
+#define TEMP_ADC_40C     2200    // <-- CALIBRATE THIS VALUE
+#define CURR_ADC_HIGH    (2250 * 4095 / 3300)   // +10 A
+#define CURR_ADC_LOW     (1050 * 4095 / 3300)   // -10 A
+
+/* ===================== GLOBALS ===================== */
+
+volatile uint8_t bms_fault = 0;
+
+/* ===================== PROTOTYPES ===================== */
+
+void     SystemClock_Config(void);
+void     UART2_Init(void);
+void     ADC_Init_All(void);
 uint16_t ADC_Temp_ReadRaw(void);
-void UART_SendString(const char *s);
-int16_t Temp_From_mV(uint32_t mv);
-//Mosfet driven switch control function
-void MosfetSet(uint8_t mode);
+uint16_t ADC_Current_ReadRaw(void);
+void     UART_SendString(const char *s);
+float    ntc_temp_c_from_adc(uint16_t adc);
+uint32_t ADC_To_mV(uint16_t adc);
+int16_t  Current_From_mV(uint32_t mv);
+void     MosfetInit(void);
+void     MosfetSet(uint8_t mode);
+
 
 // --- SYSTEM CLOCK CONFIG ---
 void SystemClock_Config(void)
@@ -81,22 +99,24 @@ void UART_SendString(const char *s)
 {
     while (*s != '\0')
     {
-        LL_USART_TransmitData8(USART2, (uint8_t)*s++);
         while (!LL_USART_IsActiveFlag_TXE(USART2))
         {
-            // wait
         }
+        LL_USART_TransmitData8(USART2, (uint8_t)*s++);
+    }
+
+    while (!LL_USART_IsActiveFlag_TC(USART2))
+    {
     }
 }
+// --- ADC init for ALL ---
 
-// --- ADC init for Temp sensor on PB0 (ADC1 channel 8) ---
-void ADC_Temp_Init(void)
+void ADC_Init_All(void)
 {
-    // Enable GPIOB and ADC1 clocks
+    LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOA);
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOB);
     LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_ADC1);
 
-    // PB0 as analog input
     LL_GPIO_InitTypeDef GPIO_InitStruct;
     LL_GPIO_StructInit(&GPIO_InitStruct);
     GPIO_InitStruct.Pin  = LL_GPIO_PIN_0;
@@ -104,7 +124,12 @@ void ADC_Temp_Init(void)
     GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
     LL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    // Basic ADC configuration
+    LL_GPIO_StructInit(&GPIO_InitStruct);
+    GPIO_InitStruct.Pin  = LL_GPIO_PIN_1;
+    GPIO_InitStruct.Mode = LL_GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = LL_GPIO_PULL_NO;
+    LL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
     LL_ADC_InitTypeDef     ADC_InitStruct;
     LL_ADC_REG_InitTypeDef ADC_REG_InitStruct;
 
@@ -121,52 +146,124 @@ void ADC_Temp_Init(void)
     ADC_REG_InitStruct.DMATransfer     = LL_ADC_REG_DMA_TRANSFER_NONE;
     LL_ADC_REG_Init(ADC1, &ADC_REG_InitStruct);
 
-    // PB0 = ADC1_IN8, use as rank 1
-    LL_ADC_REG_SetSequencerRanks(ADC1,
-                                 LL_ADC_REG_RANK_1,
-                                 LL_ADC_CHANNEL_8);
-
-    // Sampling time
-    LL_ADC_SetChannelSamplingTime(ADC1,
-                                  LL_ADC_CHANNEL_8,
-                                  LL_ADC_SAMPLINGTIME_16CYCLES);
-
-    // Enable ADC
     LL_ADC_Enable(ADC1);
+
+/* >>> ADDED: Analog Watchdog configuration */
+	LL_ADC_SetAnalogWDThresholds(ADC1, CURR_ADC_HIGH, CURR_ADC_LOW);
+
+	/* STM32L1 uses *MonitChannels and *_REG defines */
+	LL_ADC_SetAnalogWDMonitChannels(
+	    ADC1,
+	    LL_ADC_AWD_CHANNEL_1_REG | LL_ADC_AWD_CHANNEL_8_REG
+	);
+
+	LL_ADC_EnableIT_AWD1(ADC1);
+
+	NVIC_SetPriority(ADC1_IRQn, 0);
+	NVIC_EnableIRQ(ADC1_IRQn);
+
 }
+
+
 
 // --- One-shot ADC read on temp channel (PB0) ---
 uint16_t ADC_Temp_ReadRaw(void)
 {
-    // Start conversion
+    LL_ADC_REG_SetSequencerRanks(ADC1,
+                                 LL_ADC_REG_RANK_1,
+                                 LL_ADC_CHANNEL_8);
+    LL_ADC_SetChannelSamplingTime(ADC1,
+                                  LL_ADC_CHANNEL_8,
+                                  LL_ADC_SAMPLINGTIME_16CYCLES);
+
     LL_ADC_REG_StartConversionSWStart(ADC1);
 
-    // Wait for end of conversion
     while (!LL_ADC_IsActiveFlag_EOCS(ADC1))
     {
-        // wait
     }
 
-    // Clear flag
     LL_ADC_ClearFlag_EOCS(ADC1);
-
-    // Read 12-bit result
     return (uint16_t)LL_ADC_REG_ReadConversionData12(ADC1);
+
 }
 
+
+uint16_t ADC_Current_ReadRaw(void)
+{
+    LL_ADC_REG_SetSequencerRanks(ADC1,
+                                 LL_ADC_REG_RANK_1,
+                                 LL_ADC_CHANNEL_1);
+    LL_ADC_SetChannelSamplingTime(ADC1,
+                                  LL_ADC_CHANNEL_1,
+                                  LL_ADC_SAMPLINGTIME_16CYCLES);
+
+    LL_ADC_REG_StartConversionSWStart(ADC1);
+
+    while (!LL_ADC_IsActiveFlag_EOCS(ADC1))
+    {
+    }
+
+    LL_ADC_ClearFlag_EOCS(ADC1);
+    return (uint16_t)LL_ADC_REG_ReadConversionData12(ADC1);
+}
 // --- Convert mV to temperature in Â°C (integer) ---
 // Mapping from your HW doc: 0.03 V -> -20 Â°C, 0.55 V -> 50 Â°C
 // Use linear interpolation in integer math.
-int16_t Temp_From_mV(uint32_t mv)
+float ntc_temp_c_from_adc(uint16_t adc)
 {
-    // Clamp to sensor range 30â€“550 mV
-    if (mv <= 30U)  return -20;
-    if (mv >= 550U) return 50;
+    const float T0 = 298.15f;   
+    const float R0 = 100.0f;    
+    const float B  = 3560.0f;   
+    const float Rs = 200.0f;    
 
-    int32_t num = ((int32_t)mv - 30) * 70; // 70 Â°C span
-    int32_t t   = -20 + num / 520;         // 520 mV span
-    return (int16_t)t;
+    if (adc == 0)
+        adc = 1;
+    if (adc >= 4095)
+        adc = 4094;
+
+    float r_ntc = Rs * (float)adc / (4095.0f - (float)adc);
+
+    float inv_T = (1.0f / T0) + (1.0f / B) * logf(r_ntc / R0);
+    float T     = 1.0f / inv_T;  
+
+    return T - 273.15f;           
 }
+
+uint32_t ADC_To_mV(uint16_t adc)
+{
+    return (uint32_t)adc * 3300u / 4095u;
+}
+
+
+int16_t Current_From_mV(uint32_t mv)
+{
+    if (mv <= 1050u)
+        return -10;
+    if (mv >= 2250u)
+        return 10;
+
+    int32_t num = ((int32_t)mv - 1050) * 20; 
+    int32_t i   = -10 + num / 1200;         
+
+    return (int16_t)i;
+}
+
+
+void  MosfetInit(void){
+    // configure PB8 for Output
+    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_8, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_8, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_8, LL_GPIO_SPEED_FREQ_LOW);
+    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_8, LL_GPIO_PULL_NO);
+    // Configure PB9 for output
+    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_9, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_9, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_9, LL_GPIO_SPEED_FREQ_LOW);
+    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_9, LL_GPIO_PULL_NO);
+
+
+}
+
 
 void MosfetSet(uint8_t mode)
 {
@@ -177,7 +274,6 @@ void MosfetSet(uint8_t mode)
             LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_8); // D15
             LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_9); // D14
 	    
-            // Integer Â°C, Robot will Convert To Number
             snprintf(resp, sizeof(resp), "Mosfet fully closed\r\n");
             UART_SendString(resp);
 
@@ -186,7 +282,6 @@ void MosfetSet(uint8_t mode)
         case 1: // D14 ON, D15 OFF
             LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_9);   // D14 ON
             LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_8); // D15 OFF
-            // Integer Â°C, Robot will Convert To Number
             snprintf(resp, sizeof(resp), "Mosfet charge\r\n");
             UART_SendString(resp);
 
@@ -195,7 +290,6 @@ void MosfetSet(uint8_t mode)
         case 2: // D14 OFF, D15 ON
             LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_9); // D14 OFF
             LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_8);   // D15 ON
-            // Integer Â°C, Robot will Convert To Number
             snprintf(resp, sizeof(resp), "Mosfet discharge\r\n");
             UART_SendString(resp);
 
@@ -203,7 +297,6 @@ void MosfetSet(uint8_t mode)
         case 3:
             LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_9);   // D14 ON
             LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_8);   // D15 ON
-            // Integer Â°C, Robot will Convert To Number
             snprintf(resp, sizeof(resp), "Mosfet fully open\r\n");
             UART_SendString(resp);
 	    break;
@@ -218,25 +311,27 @@ void MosfetSet(uint8_t mode)
     }
 }
 
+
+/* ===================== ADDED INTERRUPT ===================== */
+void ADC1_IRQHandler(void)
+{
+    if (LL_ADC_IsActiveFlag_AWD1(ADC1))
+    {
+        LL_ADC_ClearFlag_AWD1(ADC1);
+        bms_fault = 1;
+        MosfetSet(0);
+        UART_SendString("BMS FAULT: TEMP / CURRENT\r\n");
+    }
+}
+
 // --- MAIN ---
 int main(void)
 {
     SystemClock_Config();
     UART2_Init();
-    ADC_Temp_Init();
+    ADC_Init_All();
+    MosfetInit();
 
-    // configure PB8 for Output
-    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_8, LL_GPIO_MODE_OUTPUT);
-    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_8, LL_GPIO_OUTPUT_PUSHPULL);
-    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_8, LL_GPIO_SPEED_FREQ_LOW);
-    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_8, LL_GPIO_PULL_NO);
-    // Configure PB9 for output
-    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_9, LL_GPIO_MODE_OUTPUT);
-    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_9, LL_GPIO_OUTPUT_PUSHPULL);
-    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_9, LL_GPIO_SPEED_FREQ_LOW);
-    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_9, LL_GPIO_PULL_NO);
-
-    // Optional: LED on PA5
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOA);
     LL_GPIO_InitTypeDef GPIO_InitStruct;
     LL_GPIO_StructInit(&GPIO_InitStruct);
@@ -248,50 +343,33 @@ int main(void)
 
     while (1)
     {
-        // Read exactly 4 characters for "temp"
-        char    buf[5] = {0};
-        uint8_t index  = 0;
 
-        while (index < 4)
+	if (bms_fault)
         {
-            if (LL_USART_IsActiveFlag_RXNE(USART2))
-            {
-                buf[index++] = LL_USART_ReceiveData8(USART2);
-            }
+            LL_mDelay(1000);
+            continue;
         }
 
-        // If command is "temp"
-        if (strncmp(buf, "temp", 4) == 0)
-        {
-            uint16_t adc_raw = ADC_Temp_ReadRaw();
 
-            // Convert ADC raw to millivolts (12-bit ADC, 3.3 V ref)
-            uint32_t mv = (uint32_t)adc_raw * 3300U / 4095U;
+        uint16_t adc_temp   = ADC_Temp_ReadRaw();
+        float    temp_c_raw = ntc_temp_c_from_adc(adc_temp);
 
-            int16_t temp_c = Temp_From_mV(mv);
+        float temp_c_scaled = temp_c_raw / 2.0f;
+        int   temp_int      = (int)(temp_c_scaled + 0.5f);   // round
 
-            char resp[32];
-            // Integer Â°C, Robot will Convert To Number
-            snprintf(resp, sizeof(resp), "%d\r\n", (int)temp_c);
-            UART_SendString(resp);
-        }
-        //Mosfet commands 
-	if  (strncmp(buf, "MfCl", 4) == 0){
-            MosfetSet(0);
-        }
-	if  (strncmp(buf, "MfCh", 4) == 0){
-            MosfetSet(1);
-        }
-        if  (strncmp(buf, "MfDc", 4) == 0){
-            MosfetSet(2);
-        }
-        if  (strncmp(buf, "MfOp", 4) == 0){
-            MosfetSet(3);
-        }
+        uint16_t adc_curr = ADC_Current_ReadRaw();
+        uint32_t mv_curr  = ADC_To_mV(adc_curr);
+        int16_t  curr_a   = Current_From_mV(mv_curr);        // -10 .. 10 A
 
-        // else: ignore other commands for now
+        char out[32];
+        snprintf(out, sizeof(out), "%d\r\n", temp_int);
+        UART_SendString(out);
+        char out2[32];
+        snprintf(out2, sizeof(out2), "I=%d\r\n", (int)curr_a);
+        UART_SendString(out2);
+
+        LL_GPIO_TogglePin(GPIOA, LL_GPIO_PIN_5);
+
+        LL_mDelay(2000);
     }
-
-    // Never reached
-    return 0;
 }

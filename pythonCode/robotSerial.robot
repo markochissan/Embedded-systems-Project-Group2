@@ -1,6 +1,7 @@
 *** Settings ***
 Library    SerialLibrary
 Library    String
+Library    InfluxLib.py
 
 *** Variables ***
 ${PORT}       /dev/ttyACM0
@@ -8,60 +9,45 @@ ${BAUD}       115200
 ${TIMEOUT}    5
 
 *** Test Cases ***
-Read Temperature Over UART
-    [Documentation]    Reads temperature and verifies valid range
+Stream Temp And Current To Influx
     Connect              ${PORT}    ${BAUD}
     Set Timeout          ${TIMEOUT}
     Reset Input Buffer
     Reset Output Buffer
 
-    Write                temp
-    ${data}=             Read Until    \n
-    Log                  Got from MCU raw: ${data}
+    WHILE    True
+        # --- 1) TEMPERATURE LINE (e.g. "23\r\n") ---
+        ${t_line}=        Read Until    \n
+        Log               Raw temperature line: ${t_line}
 
-    ${clean}=            Clean UART String    ${data}
-    ${temp}=             Convert To Number    ${clean}
+        ${t_clean}=       Strip String    ${t_line}
+        ${temp}=          Convert To Number    ${t_clean}
 
-    Should Be True       ${temp} >= -40 and ${temp} <= 125
+        Should Be True    ${temp} >= -40 and ${temp} <= 125
 
-    Log                  Temperature: ${temp} Â°C
-    Log To Console       >>> Temperature: ${temp} Â°C
+        Log               Temperature: ${temp} Â°C
+        Log To Console    >>> Temperature: ${temp} Â°C
+        #Write Temp To Influx    ${temp}
 
-    Disconnect
+        # --- 2) CURRENT LINE (e.g. "I=-3\r\n") ---
+        ${i_line}=        Read Until    \n
+        Log               Raw current line: ${i_line}
 
+        ${i_clean}=       Strip String    ${i_line}
+        # Expect format "I=<value>"
+        ${parts}=         Split String    ${i_clean}    =
+        Length Should Be  ${parts}    2
 
-Test MOSFET States Over UART
-    [Documentation]    Verifies all MOSFET states via UART feedback
-    Connect              ${PORT}    ${BAUD}
-    Set Timeout          ${TIMEOUT}
-    Reset Input Buffer
-    Reset Output Buffer
+        ${curr_str}=      Set Variable    ${parts[1]}
+        ${current}=       Convert To Number    ${curr_str}
 
-    Verify MOSFET State    MfOp    Mosfet fully open
-    Verify MOSFET State    MfCl    Mosfet fully closed
-    Verify MOSFET State    MfCh    Mosfet charge
-    Verify MOSFET State    MfDc    Mosfet discharge
+        Should Be True    ${current} >= -10 and ${current} <= 10
 
-    Disconnect
+        Log               Current: ${current} A
+        Log To Console    >>> Current: ${current} A
+        #Write Current To Influx    ${current}
+	# -----3) Mosfet state line ------
 
+    END
 
-*** Keywords ***
-Clean UART String
-    [Arguments]    ${data}
-    ${clean}=      Replace String    ${data}    \r\n    ${EMPTY}
-    ${clean}=      Replace String    ${clean}   \n      ${EMPTY}
-    ${clean}=      Replace String    ${clean}   \r      ${EMPTY}
-    [Return]       ${clean}
-
-Verify MOSFET State
-    [Arguments]    ${command}    ${expected}
-
-    Write          ${command}
-    ${resp}=       Read Until    \n
-    Log            MOSFET raw response: ${resp}
-
-    ${clean}=      Clean UART String    ${resp}
-
-    Should Contain    ${clean}    ${expected}
-
-    Log To Console    >>> MOSFET OK: ${clean}
+    Disconnect 
