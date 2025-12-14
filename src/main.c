@@ -16,6 +16,8 @@ void ADC_Temp_Init(void);
 uint16_t ADC_Temp_ReadRaw(void);
 void UART_SendString(const char *s);
 int16_t Temp_From_mV(uint32_t mv);
+//Mosfet driven switch control function
+void MosfetSet(uint8_t mode);
 
 // --- SYSTEM CLOCK CONFIG ---
 void SystemClock_Config(void)
@@ -152,18 +154,68 @@ uint16_t ADC_Temp_ReadRaw(void)
     return (uint16_t)LL_ADC_REG_ReadConversionData12(ADC1);
 }
 
-// --- Convert mV to temperature in °C (integer) ---
-// Mapping from your HW doc: 0.03 V -> -20 °C, 0.55 V -> 50 °C
+// --- Convert mV to temperature in Â°C (integer) ---
+// Mapping from your HW doc: 0.03 V -> -20 Â°C, 0.55 V -> 50 Â°C
 // Use linear interpolation in integer math.
 int16_t Temp_From_mV(uint32_t mv)
 {
-    // Clamp to sensor range 30–550 mV
+    // Clamp to sensor range 30â€“550 mV
     if (mv <= 30U)  return -20;
     if (mv >= 550U) return 50;
 
-    int32_t num = ((int32_t)mv - 30) * 70; // 70 °C span
+    int32_t num = ((int32_t)mv - 30) * 70; // 70 Â°C span
     int32_t t   = -20 + num / 520;         // 520 mV span
     return (int16_t)t;
+}
+
+void MosfetSet(uint8_t mode)
+{
+    char resp[32];
+    switch(mode)
+    {
+        case 0: // Both OFF
+            LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_8); // D15
+            LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_9); // D14
+	    
+            // Integer Â°C, Robot will Convert To Number
+            snprintf(resp, sizeof(resp), "Mosfet fully closed\r\n");
+            UART_SendString(resp);
+
+            break;
+
+        case 1: // D14 ON, D15 OFF
+            LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_9);   // D14 ON
+            LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_8); // D15 OFF
+            // Integer Â°C, Robot will Convert To Number
+            snprintf(resp, sizeof(resp), "Mosfet charge\r\n");
+            UART_SendString(resp);
+
+            break;
+
+        case 2: // D14 OFF, D15 ON
+            LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_9); // D14 OFF
+            LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_8);   // D15 ON
+            // Integer Â°C, Robot will Convert To Number
+            snprintf(resp, sizeof(resp), "Mosfet discharge\r\n");
+            UART_SendString(resp);
+
+            break;
+        case 3:
+            LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_9);   // D14 ON
+            LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_8);   // D15 ON
+            // Integer Â°C, Robot will Convert To Number
+            snprintf(resp, sizeof(resp), "Mosfet fully open\r\n");
+            UART_SendString(resp);
+	    break;
+
+        default: // Invalid value â†’ both OFF
+            LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_8);
+            LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_9);
+	    snprintf(resp, sizeof(resp), "Invalid value Mosfet off\r\n");
+            UART_SendString(resp);
+       
+            break;
+    }
 }
 
 // --- MAIN ---
@@ -172,6 +224,17 @@ int main(void)
     SystemClock_Config();
     UART2_Init();
     ADC_Temp_Init();
+
+    // configure PB8 for Output
+    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_8, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_8, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_8, LL_GPIO_SPEED_FREQ_LOW);
+    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_8, LL_GPIO_PULL_NO);
+    // Configure PB9 for output
+    LL_GPIO_SetPinMode(GPIOB, LL_GPIO_PIN_9, LL_GPIO_MODE_OUTPUT);
+    LL_GPIO_SetPinOutputType(GPIOB, LL_GPIO_PIN_9, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_GPIO_SetPinSpeed(GPIOB, LL_GPIO_PIN_9, LL_GPIO_SPEED_FREQ_LOW);
+    LL_GPIO_SetPinPull(GPIOB, LL_GPIO_PIN_9, LL_GPIO_PULL_NO);
 
     // Optional: LED on PA5
     LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_GPIOA);
@@ -208,13 +271,27 @@ int main(void)
             int16_t temp_c = Temp_From_mV(mv);
 
             char resp[32];
-            // Integer °C, Robot will Convert To Number
+            // Integer Â°C, Robot will Convert To Number
             snprintf(resp, sizeof(resp), "%d\r\n", (int)temp_c);
             UART_SendString(resp);
         }
+        //Mosfet commands 
+	if  (strncmp(buf, "MfCl", 4) == 0){
+            MosfetSet(0);
+        }
+	if  (strncmp(buf, "MfCh", 4) == 0){
+            MosfetSet(1);
+        }
+        if  (strncmp(buf, "MfDc", 4) == 0){
+            MosfetSet(2);
+        }
+        if  (strncmp(buf, "MfOp", 4) == 0){
+            MosfetSet(3);
+        }
+
         // else: ignore other commands for now
     }
 
     // Never reached
-    // return 0;
+    return 0;
 }
